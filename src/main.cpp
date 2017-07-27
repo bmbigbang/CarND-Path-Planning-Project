@@ -7,9 +7,14 @@
 #include <vector>
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
+#include "Eigen-3.3/Eigen/Dense"
 #include "json.hpp"
 
 using namespace std;
+
+using Eigen::MatrixXd;
+using Eigen::VectorXd;
+
 
 // for convenience
 using json = nlohmann::json;
@@ -159,6 +164,57 @@ vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> m
 
 }
 
+
+vector<double> JMT(vector< double> start, vector <double> end, double T)
+{
+  /*
+  Calculate the Jerk Minimizing Trajectory that connects the initial state
+  to the final state in time T.
+
+  INPUTS
+
+  start - the vehicles start location given as a length three array
+      corresponding to initial values of [s, s_dot, s_double_dot]
+
+  end   - the desired end state for vehicle. Like "start" this is a
+      length three array.
+
+  T     - The duration, in seconds, over which this maneuver should occur.
+
+  OUTPUT
+  an array of length 6, each value corresponding to a coefficent in the polynomial
+  s(t) = a_0 + a_1 * t + a_2 * t**2 + a_3 * t**3 + a_4 * t**4 + a_5 * t**5
+
+  EXAMPLE
+
+  > JMT( [0, 10, 0], [10, 10, 0], 1)
+  [0.0, 10.0, 0.0, 0.0, 0.0, 0.0]
+  */
+
+  MatrixXd A = MatrixXd(3, 3);
+  A << T*T*T, T*T*T*T, T*T*T*T*T,
+       3*T*T, 4*T*T*T,5*T*T*T*T,
+       6*T, 12*T*T, 20*T*T*T;
+
+  MatrixXd B = MatrixXd(3,1);
+  B << end[0]-(start[0]+start[1]*T+.5*start[2]*T*T),
+       end[1]-(start[1]+start[2]*T),
+       end[2]-start[2];
+
+  MatrixXd Ai = A.inverse();
+
+  MatrixXd C = Ai*B;
+
+  vector <double> result = {start[0], start[1], .5*start[2]};
+  for(int i = 0; i < C.size(); i++)
+  {
+    result.push_back(C.data()[i]);
+  }
+
+  return result;
+}
+
+
 int main() {
   uWS::Hub h;
 
@@ -214,40 +270,123 @@ int main() {
         
         if (event == "telemetry") {
           // j[1] is the data JSON object
-          
+
         	// Main car's localization Data
-          	double car_x = j[1]["x"];
-          	double car_y = j[1]["y"];
-          	double car_s = j[1]["s"];
-          	double car_d = j[1]["d"];
-          	double car_yaw = j[1]["yaw"];
-          	double car_speed = j[1]["speed"];
+          double car_x = j[1]["x"];
+          double car_y = j[1]["y"];
+          double car_s = j[1]["s"];
+          double car_d = j[1]["d"];
+          double car_yaw = j[1]["yaw"];
+          double car_speed = j[1]["speed"];
+          auto car_lane = (int) floor(car_d / 3);
+          double car_v_s = sin(car_yaw) * car_speed;
+          double car_v_d = cos(car_yaw) * car_speed;
+          /// target velocity should be 25 m/s for s and small value for d
+          double target_s_v = 25;
+          double target_d_v = 0.5;
+          // time of prediction into the future which leads to 40 path points with 0.02s between each
+          int path_vals = 10;
+          double t_end = path_vals * 0.02;
 
-          	// Previous path data given to the Planner
-          	auto previous_path_x = j[1]["previous_path_x"];
-          	auto previous_path_y = j[1]["previous_path_y"];
-          	// Previous path's end s and d values 
-          	double end_path_s = j[1]["end_path_s"];
-          	double end_path_d = j[1]["end_path_d"];
+          // Previous path data given to the Planner
+          auto previous_path_x = j[1]["previous_path_x"];
+          auto previous_path_y = j[1]["previous_path_y"];
+          // Previous path's end s and d values
+          double end_path_s = j[1]["end_path_s"];
+          double end_path_d = j[1]["end_path_d"];
 
-          	// Sensor Fusion Data, a list of all other cars on the same side of the road.
-          	auto sensor_fusion = j[1]["sensor_fusion"];
+          // Sensor Fusion Data, a list of all other cars on the same side of the road.
+          auto sensor_fusion = j[1]["sensor_fusion"];
+          // cout << car_x << "," << car_y << "," << car_s << "," << car_d << "," << car_yaw << "," << car_speed << "," << endl;
+          //for (int i = 0; i < sensor_fusion.size(); i++) {
+            // cout << sensor_fusion[i] << "," << sensor_fusion.size() << endl;
+            // objects orientation: [ID, x, y, speed, yaw, d, s]
+          //}
 
-          	json msgJson;
+          json msgJson;
 
-          	vector<double> next_x_vals;
-          	vector<double> next_y_vals;
+          vector<double> next_x_vals(path_vals, 0);
+          vector<double> next_y_vals(path_vals, 0);
 
+          int target_waypoint = NextWaypoint(car_x, car_y, car_yaw, map_waypoints_x, map_waypoints_y);
 
-          	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
-          	msgJson["next_x"] = next_x_vals;
-          	msgJson["next_y"] = next_y_vals;
+          auto target_x = (double) map_waypoints_x[target_waypoint];
+          auto target_y = (double) map_waypoints_y[target_waypoint];
+          double target_s; double target_dx; double target_dy;
 
-          	auto msg = "42[\"control\","+ msgJson.dump()+"]";
+          // if waypoint is too close to current pos, choose the next one
+          if (target_x*target_x + target_y*target_y - car_x*car_x - car_y*car_y < 300) {
+            target_x = (double) map_waypoints_x[target_waypoint + 1];
+            target_y = (double) map_waypoints_y[target_waypoint + 1];
+            target_dx = (double) map_waypoints_dx[target_waypoint + 1];
+            target_dy = (double) map_waypoints_dy[target_waypoint + 1];
+            target_s = (double) map_waypoints_s[target_waypoint + 1];
+          }
+          else {
+            target_dx = (double) map_waypoints_dx[target_waypoint];
+            target_dy = (double) map_waypoints_dy[target_waypoint];
+            target_s = (double) map_waypoints_s[target_waypoint];
+          }
+          double target_d = sqrtf(target_dx*target_dx + target_dy*target_dy);
 
-          	//this_thread::sleep_for(chrono::milliseconds(1000));
-          	ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
-          
+          // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
+          // search around the road in the next 5 seconds to find if a lane change is necessary
+
+          bool change_lane = false;
+          // first check if there is a car in front in the same lane and whether a collision might occur
+          for (int i = 0; i < sensor_fusion.size(); i++) {
+            double obj_d = sensor_fusion[i][5];
+            double obj_s = sensor_fusion[i][6];
+            // check the car is in front and in the car's lane
+            if (fabs(obj_d - car_d) < 1.2 && obj_s > car_s) {
+              // check if maintaining current velocity will cause a collision
+              double obj_yaw = sensor_fusion[i][4];
+              double obj_v = sensor_fusion[i][3];
+              double obj_v_s = sin(obj_yaw) * obj_v;
+              double car_v_s = sin(car_yaw) * car_speed;
+              if ((obj_v_s * t_end) + obj_s <= (car_v_s * t_end) + car_s) {
+                // flag for lane change
+                change_lane = true;
+              }
+              else {
+                // set straight line waypoints
+              }
+            }
+          }
+
+          if (change_lane == true) {
+            for (int i = 0; i < sensor_fusion.size(); i++) {
+              double obj_d = (double) sensor_fusion[i][5];
+              double obj_s = (double) sensor_fusion[i][6];
+
+            }
+          }
+
+          // solve jerk minimizing trajectory for proposed goal and start states
+          vector<double> jmt_s = JMT({car_s, car_v_s, 0}, {target_s, target_s_v, 1}, t_end);
+          vector<double> jmt_d = JMT({car_d, car_v_d, t_end}, {target_d, target_d_v, 0.1}, t_end);
+
+          // interpolate path points
+          double n_s; double n_d; double n_t; vector<double> XY;
+          for (int i = 0; i < path_vals; i++) {
+            n_t = 0.02 * i;
+            n_s = jmt_s[0] + jmt_s[1] * n_t + jmt_s[2] * (n_t*n_t) + jmt_s[3] * (n_t*n_t*n_t) +
+                jmt_s[4] * (n_t*n_t*n_t*n_t) + jmt_s[5] * (n_t*n_t*n_t*n_t*n_t);
+            n_d = jmt_d[0] + jmt_d[1] * n_t + jmt_d[2] * (n_t*n_t) + jmt_d[3] * (n_t*n_t*n_t) +
+                  jmt_d[4] * (n_t*n_t*n_t*n_t) + jmt_d[5] * (n_t*n_t*n_t*n_t*n_t);
+            XY = getXY(n_s, n_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            next_x_vals[i] = XY[0];
+            next_y_vals[i] = XY[1];
+          }
+
+          msgJson["next_x"] = next_x_vals;
+          msgJson["next_y"] = next_y_vals;
+
+          auto msg = "42[\"control\","+ msgJson.dump()+"]";
+
+          //this_thread::sleep_for(chrono::milliseconds(1000));
+          ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
+
         }
       } else {
         // Manual driving
