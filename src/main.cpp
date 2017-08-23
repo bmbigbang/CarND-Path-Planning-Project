@@ -37,6 +37,8 @@ double ref_vel = 0;
 int path_vals = 50;
 double t_base = 0.02;
 double t_end = path_vals * t_base;
+double s_to_car_in_front = 50000000;
+bool change_lane = false;
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -242,7 +244,8 @@ int main() {
           double car_d = j[1]["d"];
           double car_yaw = j[1]["yaw"];
           double car_speed = j[1]["speed"];
-          auto car_lane = (int) floor((car_d - 1) / 4);
+          int car_lane = car_d / 4;
+          cout << car_lane << endl;
           /// target velocity should be 25 m/s for s and small value for d
           double target_s_v = 25;
 
@@ -308,7 +311,7 @@ int main() {
           t = clock();
 
           // search around the road in the next 1 second to find if a lane change is necessary
-          bool change_lane = false;
+
           bool slow_down = false;
           double slow_down_v = 0;
           double obj_d;
@@ -321,90 +324,87 @@ int main() {
           double obj_v_s;
           int obj_lane;
           int first_obj_id = 0;
-          double s_to_car_in_front = 50000000;
-          vector<vector<double>> interest_cars;
+          double a = 2.5;
 
+          vector<vector<double>> interest_cars;
+          vector<int> available_lanes = {0, 1, 2};
+          available_lanes.erase(available_lanes.begin() + car_lane);
           // if velocity is too slow, speed up in the same lane
           for (int i = 0; i < sensor_fusion.size(); i++) {
             obj_d = sensor_fusion[i][6];
-            obj_s = sensor_fusion[i][5];
-            obj_lane = (int) floor((obj_d - 1) / 4);
-
-            // find object with smallest s
-            // check the car is in front and in the car's lane
-            if (obj_lane == car_lane && obj_s > car_s) {
-              if (s_to_car_in_front > obj_s) {
-                first_obj_id = i;
-                s_to_car_in_front = obj_s;
-              }
-            }
-            else if (obj_lane != car_lane) {
-              obj_vy = sensor_fusion[first_obj_id][4];
-              obj_vx = sensor_fusion[first_obj_id][3];
+            if (obj_d > 0) {
+              obj_s = sensor_fusion[i][5];
+              obj_lane = obj_d / 4;
+              obj_vx = sensor_fusion[i][3];
+              obj_vy = sensor_fusion[i][4];
               obj_speed = sqrt(obj_vx * obj_vx + obj_vy * obj_vy);
-              if (obj_s + obj_speed > car_s) {
-                interest_cars.push_back(vector <double> {obj_s, obj_d, obj_speed});
-              }
+              obj_s += ((double) prev_size * .02 * obj_speed);
 
-            }
-          }
+              // find object with smallest s
+              // check the car is in front and in the car's lane
+              if ((-a < (obj_d - car_d)) && ((obj_d - car_d) < a)) {
 
-          // use the sensor fusion data to make adjustments to speed
-          // check if maintaining current velocity will cause a collision
-          obj_d = sensor_fusion[first_obj_id][6];
-          obj_s = sensor_fusion[first_obj_id][5];
-          obj_vy = sensor_fusion[first_obj_id][4];
-          obj_vx = sensor_fusion[first_obj_id][3];
-          obj_speed = sqrt(obj_vx * obj_vx + obj_vy * obj_vy);
-          // obj_x = sensor_fusion[first_obj_id][1];
-          // obj_y = sensor_fusion[first_obj_id][2];
-
-          // increment the obj_s slighty by its speed to predict its position in the near future
-          obj_s += ((double) prev_size * .02 * obj_speed);
-          if ((obj_s > car_s) && ((obj_s - car_s - car_v_s - (car_a * 0.5)) < 20)) {
-            slow_down = true;
-            slow_down_v = obj_speed;
-          }
-
-          if (!change_lane) {
-            vector<int> available_lanes = {0, 1, 2};
-            available_lanes.erase(available_lanes.begin() + car_lane);
-            for (int i = 0; i < interest_cars.size(); i++) {
-              obj_s = interest_cars[i][0];
-              obj_d = interest_cars[i][1];
-              obj_speed = interest_cars[i][2];
-              if (fabs(obj_d - car_d) < 2.1) {
-                obj_s += ((double) prev_size * .02 * obj_speed);
-                // a closer car is swerving into our lane, slow down!
-                if (s_to_car_in_front > obj_s > car_s) {
-                  s_to_car_in_front = obj_s;
+                if ((obj_s > car_s) && (50 < (obj_s - car_s)) && ((obj_s - car_s) < 60)) {
                   slow_down = true;
-                  slow_down_v = interest_cars[i][2];
                 }
               }
-              if (slow_down) {
-                obj_lane = (int) floor((obj_d - 1) / 4);
-                for (int k = 0; k < available_lanes.size(); k++) {
-                  if (available_lanes[k] == obj_lane && obj_s + obj_speed - car_s - car_v_s - (car_a * 0.5) > -10) {
-                    available_lanes.erase(available_lanes.begin() + k);
+              else {
+                // watch for swerving cars
+                if ((obj_speed > ref_vel + 10) && ((obj_d + 2 > car_d) && (car_d > obj_d - 2)) &&
+                    ((car_s + 15) > obj_s) && (obj_s > (car_s - 5))) {
+                  slow_down = true;
+                  for (int k = 0; k < available_lanes.size(); k++) {
+                    if (available_lanes[k] == obj_lane) {
+                      available_lanes.erase(available_lanes.begin() + k);
+                    }
                   }
                 }
 
+//                if (((car_s + 40) > obj_s) && (obj_s > (car_s - 5))) {
+//                  for (int k = 0; k < available_lanes.size(); k++) {
+//                    if (available_lanes[k] == obj_lane) {
+//                      available_lanes.erase(available_lanes.begin() + k);
+//                    }
+//                  }
+//                  interest_cars.push_back(vector<double> {obj_s, obj_d, obj_speed});
+//                }
+
               }
             }
-
-            if (slow_down && s_to_car_in_front - car_s < 20 && !available_lanes.empty()) {
-              car_lane = available_lanes[0];
-              target_lane = car_lane;
-              change_lane = true;
-            }
           }
-          else if (target_lane != car_lane) {
-            car_lane = target_lane;
-          }
-          else { change_lane = false; }
+//          if (slow_down && interest_cars.empty()) {
+//            change_lane = true;
+//          }
+//          cout << slow_down << endl;
+//          if ((slow_down && change_lane) && !available_lanes.empty()) {
+//            if (target_lane != car_lane) {
+//              slow_down = false;
+//              car_lane = target_lane;
+//            }
+//            car_lane = available_lanes[0];
+//            target_lane = car_lane;
+//            change_lane = true;
+//          }
+//          // use the sensor fusion data to make adjustments to speed
+//          // check if maintaining current velocity will cause a collision
+//          obj_d = sensor_fusion[first_obj_id][6];
+//          obj_s = sensor_fusion[first_obj_id][5];
+//          obj_vy = sensor_fusion[first_obj_id][4];
+//          obj_vx = sensor_fusion[first_obj_id][3];
+//          obj_speed = sqrt(obj_vx * obj_vx + obj_vy * obj_vy);
+//          // obj_x = sensor_fusion[first_obj_id][1];
+//          // obj_y = sensor_fusion[first_obj_id][2];
+//
+//          // increment the obj_s slighty by its speed to predict its position in the near future
+//          obj_s += ((double) prev_size * .02 * obj_speed);
+//          if ((obj_s > car_s) && (obj_s - car_s) > 30) {
+//            slow_down = true;
+//            slow_down_v = obj_speed - 7;
+//          }
 
-          if (slow_down && ref_vel > slow_down_v) { ref_vel -= .224; }
+
+
+          if (slow_down && ref_vel > 30) { ref_vel -= .224; }
           else if (ref_vel < 30) { ref_vel += 0.33; }
           else if (ref_vel < 49.5) { ref_vel += .224; }
 
