@@ -245,7 +245,7 @@ int main() {
           double car_yaw = j[1]["yaw"];
           double car_speed = j[1]["speed"];
           int car_lane = car_d / 4;
-          cout << car_lane << endl;
+
           /// target velocity should be 25 m/s for s and small value for d
           double target_s_v = 25;
 
@@ -342,16 +342,16 @@ int main() {
 
               // find object with smallest s
               // check the car is in front and in the car's lane
-              if ((-a < (obj_d - car_d)) && ((obj_d - car_d) < a)) {
+              if (obj_lane == car_lane) {
 
-                if ((obj_s > car_s) && (50 < (obj_s - car_s)) && ((obj_s - car_s) < 60)) {
+                if ((obj_s > car_s) && (5 < (obj_s - car_s)) && ((obj_s - car_s) < 45)) {
                   slow_down = true;
                 }
               }
               else {
                 // watch for swerving cars
-                if ((obj_speed > ref_vel + 10) && ((obj_d + 2 > car_d) && (car_d > obj_d - 2)) &&
-                    ((car_s + 15) > obj_s) && (obj_s > (car_s - 5))) {
+                if ((obj_speed > ref_vel + 10) && ((car_d + 2 < obj_d) && (obj_d > car_d - 2)) &&
+                    (obj_s > car_s) && (20 < (obj_s - car_s)) && ((obj_s - car_s) < 40)) {
                   slow_down = true;
                   for (int k = 0; k < available_lanes.size(); k++) {
                     if (available_lanes[k] == obj_lane) {
@@ -404,7 +404,8 @@ int main() {
 
 
 
-          if (slow_down && ref_vel > 30) { ref_vel -= .224; }
+          if (slow_down && ref_vel > 45) { ref_vel -= .224; }
+          else if (slow_down && ref_vel > 35) { ref_vel -= .134; }
           else if (ref_vel < 30) { ref_vel += 0.33; }
           else if (ref_vel < 49.5) { ref_vel += .224; }
 
