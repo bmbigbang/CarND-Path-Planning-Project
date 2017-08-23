@@ -359,6 +359,13 @@ int main() {
                     }
                   }
                 }
+                else if ((0 < (obj_s - car_s)) && ((obj_s - car_s) < 50)) {
+                  for (int k = 0; k < available_lanes.size(); k++) {
+                    if (available_lanes[k] == obj_lane) {
+                      available_lanes.erase(available_lanes.begin() + k);
+                    }
+                  }
+                }
 
 //                if (((car_s + 40) > obj_s) && (obj_s > (car_s - 5))) {
 //                  for (int k = 0; k < available_lanes.size(); k++) {
@@ -372,19 +379,25 @@ int main() {
               }
             }
           }
-//          if (slow_down && interest_cars.empty()) {
-//            change_lane = true;
-//          }
-//          cout << slow_down << endl;
-//          if ((slow_down && change_lane) && !available_lanes.empty()) {
-//            if (target_lane != car_lane) {
-//              slow_down = false;
-//              car_lane = target_lane;
-//            }
-//            car_lane = available_lanes[0];
-//            target_lane = car_lane;
-//            change_lane = true;
-//          }
+
+
+          if (!change_lane && slow_down && !available_lanes.empty()) {
+            change_lane = true;
+            slow_down = false;
+            car_lane = available_lanes[0];
+            target_lane = car_lane;
+          }
+          // cout << slow_down << endl;
+
+          if (change_lane && (target_lane != car_lane)) {
+            slow_down = false;
+            car_lane = target_lane;
+          }
+          else if (change_lane && (target_lane == car_lane)) {
+            change_lane = false;
+          }
+
+
 //          // use the sensor fusion data to make adjustments to speed
 //          // check if maintaining current velocity will cause a collision
 //          obj_d = sensor_fusion[first_obj_id][6];
