@@ -9,7 +9,7 @@
 #include "Eigen-3.3/Eigen/QR"
 #include "Eigen-3.3/Eigen/Dense"
 #include "json.hpp"
-#include <ctime>
+#include <time.h>
 #include "spline.h"
 
 using namespace std;
@@ -28,8 +28,13 @@ double rad2deg(double x) { return x * 180 / pi(); }
 
 double car_a = 0;
 double prev_car_speed = 0;
-clock_t t = clock();
+double prev_prev_size = 0;
+time_t now;
+time_t t;
+
+double seconds;
 int target_lane = 1;
+int new_lane = 1;
 
 double ref_vel = 0;
 
@@ -39,6 +44,7 @@ double t_base = 0.02;
 double t_end = path_vals * t_base;
 double s_to_car_in_front = 50000000;
 bool change_lane = false;
+bool initiate_change_lane = false;
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -182,6 +188,7 @@ vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> m
 
 
 int main() {
+  time(&t);
   uWS::Hub h;
 
   // Load up map values for waypoint's x,y,s and d normalized normal vectors
@@ -306,9 +313,13 @@ int main() {
 
           double car_v_s = car_speed * cos(ref_yaw);
           double car_v_d = car_speed * sin(ref_yaw);
-          double car_a = (car_speed - prev_car_speed) / (double(clock() - t) / CLOCKS_PER_SEC);
+          if (prev_prev_size - prev_size !=  0) {
+            car_a = (car_speed - prev_car_speed) / ((prev_prev_size - prev_size) * 0.02);
+          }
+          else {
+            car_a = 0;
+          }
           prev_car_speed = car_speed;
-          t = clock();
 
           // search around the road in the next 1 second to find if a lane change is necessary
 
@@ -328,7 +339,14 @@ int main() {
 
           vector<vector<double>> interest_cars;
           vector<int> available_lanes = {0, 1, 2};
-          available_lanes.erase(available_lanes.begin() + car_lane);
+          if ((car_lane == 0) || (car_lane == 2)) {
+            available_lanes.erase(available_lanes.begin() + 2);
+            available_lanes.erase(available_lanes.begin());
+          }
+          else {
+            available_lanes.erase(available_lanes.begin() + car_lane);
+          }
+
           // if velocity is too slow, speed up in the same lane
           for (int i = 0; i < sensor_fusion.size(); i++) {
             obj_d = sensor_fusion[i][6];
@@ -359,7 +377,7 @@ int main() {
                     }
                   }
                 }
-                else if ((0 < (obj_s - car_s)) && ((obj_s - car_s) < 50)) {
+                if ((0 < (obj_s - car_s)) && ((obj_s - car_s) < 50)) {
                   for (int k = 0; k < available_lanes.size(); k++) {
                     if (available_lanes[k] == obj_lane) {
                       available_lanes.erase(available_lanes.begin() + k);
@@ -381,17 +399,23 @@ int main() {
           }
 
 
-          if (!change_lane && slow_down && !available_lanes.empty()) {
-            change_lane = true;
-            slow_down = false;
-            car_lane = available_lanes[0];
-            target_lane = car_lane;
+          if (!change_lane && slow_down && !available_lanes.empty() &&
+              !((1 < (int(car_d) % 4)) && ((int(car_d) % 4) < 3)) && car_speed < 36) {
+            time(&now);
+            double last_time = difftime(now,t);
+            if (last_time > 5) {
+              change_lane = true;
+              slow_down = true;
+              new_lane = available_lanes[0];
+              target_lane = new_lane;
+              time(&t);
+            }
+
           }
           // cout << slow_down << endl;
 
           if (change_lane && (target_lane != car_lane)) {
-            slow_down = false;
-            car_lane = target_lane;
+            new_lane = target_lane;
           }
           else if (change_lane && (target_lane == car_lane)) {
             change_lane = false;
@@ -416,15 +440,40 @@ int main() {
 //          }
 
 
-
-          if (slow_down && ref_vel > 45) { ref_vel -= .224; }
-          else if (slow_down && ref_vel > 35) { ref_vel -= .134; }
+          if (slow_down && change_lane && ref_vel > 30) { ref_vel -= .284; }
+          else if (slow_down && ref_vel > 45) { ref_vel -= .224; }
+          else if (slow_down && ref_vel > 36) { ref_vel -= .164; }
+          else if (slow_down && ref_vel > 30) { ref_vel -= .134; }
           else if (ref_vel < 30) { ref_vel += 0.33; }
-          else if (ref_vel < 49.5) { ref_vel += .224; }
+          else if (ref_vel < 45) { ref_vel += .224; }
 
-          vector<double> next_wp0 = getXY(car_s + 30, (2 + (4 * car_lane)), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-          vector<double> next_wp1 = getXY(car_s + 60, (2 + (4 * car_lane)), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-          vector<double> next_wp2 = getXY(car_s + 90, (2 + (4 * car_lane)), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          double future_d_1 = 2 + (4 * car_lane);
+          double future_d_2 = 2 + (4 * car_lane);
+          double future_d_3 = 2 + (4 * car_lane);
+          if (new_lane != car_lane) {
+            if ((2 > (car_d - (new_lane * 4.08 + 2)) && (car_d - (new_lane * 4.08 + 2)) > -2)) {
+              future_d_1 = 2 + (4 * new_lane);
+              future_d_2 = 2 + (4 * new_lane);
+              future_d_3 = 2 + (4 * new_lane);
+            }
+            else {
+              future_d_1 = 2 + (4 * new_lane) - (1.1 * (new_lane - car_lane));
+              future_d_2 = 2 + (4 * new_lane) - (0.5 * (new_lane - car_lane));
+              future_d_3 = 2 + (4 * new_lane);
+            }
+          }
+          else if (1.8 < (car_d - (car_lane * 4.08 + 2))) {
+            future_d_1 -= (car_d - (car_lane * 4.08 + 2)) / 3;
+            future_d_2 -= (car_d - (car_lane * 4.08 + 2)) / 3;
+          }
+          else if (-1.8 < (car_d - (car_lane * 4.08 + 2))) {
+            future_d_1 += (car_d - (car_lane * 4.08 + 2)) / 3;
+            future_d_2 += (car_d - (car_lane * 4.08 + 2)) / 3;
+          }
+
+          vector<double> next_wp0 = getXY(car_s + 30, future_d_1, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp1 = getXY(car_s + 60, future_d_2, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp2 = getXY(car_s + 90, future_d_3, map_waypoints_s, map_waypoints_x, map_waypoints_y);
 
           ptsx.push_back(next_wp0[0]);
           ptsx.push_back(next_wp1[0]);
@@ -455,11 +504,18 @@ int main() {
           double target_dist = sqrt((target_x * target_x) + (target_y * target_y));
 
           double x_add_on = 0;
-
+          double y_point;
+          prev_prev_size = prev_size;
           for (int i = 0; i <= (50 - prev_size); i++) {
             double N = target_dist / (.02 * ref_vel / 2.24);
             double x_point = x_add_on + (target_x / N);
             double y_point = spl(x_point);
+//            if (slow_down && change_lane) {
+//              double y_point = spl(x_point) * (1 + (1 / pow(i, 2)));
+//            }
+//            else {
+//              double y_point = spl(x_point);
+//            }
 
             x_add_on = x_point;
 
