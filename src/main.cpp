@@ -26,6 +26,7 @@ constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
 
+// define variables for tracking car's acceleration, time and the previous path size
 double car_a = 0;
 double prev_car_speed = 0;
 double prev_prev_size = 0;
@@ -38,13 +39,11 @@ int new_lane = 1;
 
 double ref_vel = 0;
 
-// time of prediction into the future which leads to 40 path points with t_base seconds between each
+// time of prediction into the future which leads to 50 path points with t_base seconds between each
 int path_vals = 50;
 double t_base = 0.02;
 double t_end = path_vals * t_base;
-double s_to_car_in_front = 50000000;
 bool change_lane = false;
-bool initiate_change_lane = false;
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -286,6 +285,8 @@ int main() {
           double ref_y = car_y;
           double ref_yaw = deg2rad(car_yaw);
 
+          // reuse previous path points where possible to deduce the yaw angle
+          // and pass on points to be used in the future
           if (prev_size < 2) {
             double prev_car_x = car_x - cos(car_yaw);
             double prev_car_y = car_y - sin(car_yaw);
@@ -311,9 +312,11 @@ int main() {
             ptsy.push_back(ref_y);
           }
 
+          // deduce the car acceleration and component of velocity in the s/d directions
           double car_v_s = car_speed * cos(ref_yaw);
           double car_v_d = car_speed * sin(ref_yaw);
           if (prev_prev_size - prev_size !=  0) {
+            // delta v over delta t
             car_a = (car_speed - prev_car_speed) / ((prev_prev_size - prev_size) * 0.02);
           }
           else {
@@ -321,10 +324,8 @@ int main() {
           }
           prev_car_speed = car_speed;
 
-          // search around the road in the next 1 second to find if a lane change is necessary
-
+          // define variables to use for sensor fusion and the states of the car
           bool slow_down = false;
-          double slow_down_v = 0;
           double obj_d;
           double obj_s;
           double obj_x;
@@ -337,7 +338,7 @@ int main() {
           int first_obj_id = 0;
           double a = 2.5;
 
-          vector<vector<double>> interest_cars;
+          // keep track of available lanes for lange changes. disallow double lane shifts if we are on an edge lane
           vector<int> available_lanes = {0, 1, 2};
           if ((car_lane == 0) || (car_lane == 2)) {
             available_lanes.erase(available_lanes.begin() + 2);
@@ -347,9 +348,10 @@ int main() {
             available_lanes.erase(available_lanes.begin() + car_lane);
           }
 
-          // if velocity is too slow, speed up in the same lane
+          // search around the road in the next 1 second to find if a slow down or lane change is necessary
           for (int i = 0; i < sensor_fusion.size(); i++) {
             obj_d = sensor_fusion[i][6];
+            // if object is on our side of the road
             if (obj_d > 0) {
               obj_s = sensor_fusion[i][5];
               obj_lane = obj_d / 4;
@@ -358,7 +360,6 @@ int main() {
               obj_speed = sqrt(obj_vx * obj_vx + obj_vy * obj_vy);
               obj_s += ((double) prev_size * .02 * obj_speed);
 
-              // find object with smallest s
               // check the car is in front and in the car's lane
               if (obj_lane == car_lane) {
 
@@ -367,7 +368,7 @@ int main() {
                 }
               }
               else {
-                // watch for swerving cars
+                // watch for swerving cars into our lane
                 if ((obj_speed > ref_vel + 10) && ((car_d + 2 < obj_d) && (obj_d > car_d - 2)) &&
                     (obj_s > car_s) && (20 < (obj_s - car_s)) && ((obj_s - car_s) < 40)) {
                   slow_down = true;
@@ -377,6 +378,7 @@ int main() {
                     }
                   }
                 }
+                // look for clear lanes to change lane into
                 if ((0 < (obj_s - car_s)) && ((obj_s - car_s) < 50)) {
                   for (int k = 0; k < available_lanes.size(); k++) {
                     if (available_lanes[k] == obj_lane) {
@@ -384,25 +386,17 @@ int main() {
                     }
                   }
                 }
-
-//                if (((car_s + 40) > obj_s) && (obj_s > (car_s - 5))) {
-//                  for (int k = 0; k < available_lanes.size(); k++) {
-//                    if (available_lanes[k] == obj_lane) {
-//                      available_lanes.erase(available_lanes.begin() + k);
-//                    }
-//                  }
-//                  interest_cars.push_back(vector<double> {obj_s, obj_d, obj_speed});
-//                }
-
               }
             }
           }
 
-
+          // if there are available lanes and we are slowing down, and the car is in the middle of its own lane
+          // and we are moving slowly enough, enter the change lane state
           if (!change_lane && slow_down && !available_lanes.empty() &&
               !((1 < (int(car_d) % 4)) && ((int(car_d) % 4) < 3)) && car_speed < 36) {
             time(&now);
             double last_time = difftime(now,t);
+            // do not keep changing lanes in smaller windows than 5 seconds
             if (last_time > 5) {
               change_lane = true;
               slow_down = true;
@@ -410,36 +404,18 @@ int main() {
               target_lane = new_lane;
               time(&t);
             }
-
           }
-          // cout << slow_down << endl;
 
+          // if we are in the change lane state, correct the new lane
           if (change_lane && (target_lane != car_lane)) {
             new_lane = target_lane;
           }
+          // if we are in the change lane state but have moved to the target lane, return to normal state
           else if (change_lane && (target_lane == car_lane)) {
             change_lane = false;
           }
 
-
-//          // use the sensor fusion data to make adjustments to speed
-//          // check if maintaining current velocity will cause a collision
-//          obj_d = sensor_fusion[first_obj_id][6];
-//          obj_s = sensor_fusion[first_obj_id][5];
-//          obj_vy = sensor_fusion[first_obj_id][4];
-//          obj_vx = sensor_fusion[first_obj_id][3];
-//          obj_speed = sqrt(obj_vx * obj_vx + obj_vy * obj_vy);
-//          // obj_x = sensor_fusion[first_obj_id][1];
-//          // obj_y = sensor_fusion[first_obj_id][2];
-//
-//          // increment the obj_s slighty by its speed to predict its position in the near future
-//          obj_s += ((double) prev_size * .02 * obj_speed);
-//          if ((obj_s > car_s) && (obj_s - car_s) > 30) {
-//            slow_down = true;
-//            slow_down_v = obj_speed - 7;
-//          }
-
-
+          // hierarchy of slowing down per speed ranges and depending on the current state
           if (slow_down && change_lane && ref_vel > 30) { ref_vel -= .284; }
           else if (slow_down && ref_vel > 45) { ref_vel -= .224; }
           else if (slow_down && ref_vel > 36) { ref_vel -= .164; }
@@ -447,28 +423,31 @@ int main() {
           else if (ref_vel < 30) { ref_vel += 0.33; }
           else if (ref_vel < 45) { ref_vel += .224; }
 
+          // add waypoints to our estimated trajectory spline depending on whether we are changing lanes or not
           double future_d_1 = 2 + (4 * car_lane);
           double future_d_2 = 2 + (4 * car_lane);
           double future_d_3 = 2 + (4 * car_lane);
           if (new_lane != car_lane) {
-            if ((2 > (car_d - (new_lane * 4.08 + 2)) && (car_d - (new_lane * 4.08 + 2)) > -2)) {
+            if ((2 > (car_d - (new_lane * 4 + 2.08)) && (car_d - (new_lane * 4 + 2.08)) > -2)) {
               future_d_1 = 2 + (4 * new_lane);
               future_d_2 = 2 + (4 * new_lane);
               future_d_3 = 2 + (4 * new_lane);
             }
             else {
-              future_d_1 = 2 + (4 * new_lane) - (1.1 * (new_lane - car_lane));
+              // smaller increment to the current lane to allow smoother lane transition
+              future_d_1 = 2 + (4 * new_lane) - (1.18 * (new_lane - car_lane));
               future_d_2 = 2 + (4 * new_lane) - (0.5 * (new_lane - car_lane));
               future_d_3 = 2 + (4 * new_lane);
             }
           }
-          else if (1.8 < (car_d - (car_lane * 4.08 + 2))) {
-            future_d_1 -= (car_d - (car_lane * 4.08 + 2)) / 3;
-            future_d_2 -= (car_d - (car_lane * 4.08 + 2)) / 3;
+          // if not in the changing lane position, correct the target_d to be further in the middle of the current lane
+          else if (1.9 < (car_d - (car_lane * 4 + 2))) {
+            future_d_1 -= (car_d - (car_lane * 4 + 2)) / 3;
+            future_d_2 -= (car_d - (car_lane * 4 + 2)) / 3;
           }
-          else if (-1.8 < (car_d - (car_lane * 4.08 + 2))) {
-            future_d_1 += (car_d - (car_lane * 4.08 + 2)) / 3;
-            future_d_2 += (car_d - (car_lane * 4.08 + 2)) / 3;
+          else if (-1.9 < (car_d - (car_lane * 4 + 2))) {
+            future_d_1 += (car_d - (car_lane * 4 + 2)) / 3;
+            future_d_2 += (car_d - (car_lane * 4+ 2)) / 3;
           }
 
           vector<double> next_wp0 = getXY(car_s + 30, future_d_1, map_waypoints_s, map_waypoints_x, map_waypoints_y);
@@ -486,14 +465,16 @@ int main() {
           for (int i = 0; i < ptsx.size(); i++) {
             double shift_x = ptsx[i] - ref_x;
             double shift_y = ptsy[i] - ref_y;
-
+            // rotate each point in accordance to the car's orientation such that x points along the direction of s
             ptsx[i] = (shift_x * cos(-ref_yaw) - shift_y * sin(-ref_yaw));
             ptsy[i] = (shift_x * sin(-ref_yaw) + shift_y * cos(-ref_yaw));
           }
 
+          // initialise the spline fitter and add points
           tk::spline spl;
           spl.set_points(ptsx, ptsy);
 
+          // reuse the old points for the future path
           for (int i = 0; i < previous_path_x.size(); i++) {
             next_x_vals.push_back(previous_path_x[i]);
             next_y_vals.push_back(previous_path_y[i]);
@@ -506,16 +487,11 @@ int main() {
           double x_add_on = 0;
           double y_point;
           prev_prev_size = prev_size;
+          // find and calculate the future path points in accordance to the current spline
           for (int i = 0; i <= (50 - prev_size); i++) {
             double N = target_dist / (.02 * ref_vel / 2.24);
             double x_point = x_add_on + (target_x / N);
             double y_point = spl(x_point);
-//            if (slow_down && change_lane) {
-//              double y_point = spl(x_point) * (1 + (1 / pow(i, 2)));
-//            }
-//            else {
-//              double y_point = spl(x_point);
-//            }
 
             x_add_on = x_point;
 
